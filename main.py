@@ -23,6 +23,10 @@ OPEN_TABLE_MARKER = "4e62660e-8342-4222-8530-d4ff65856687"
 # easier to see.
 TABLE_BORDER = "-" * 20
 
+# When header rows are combined, separate them with this string. Using an underscore
+# padded with space to it won't be interpreted as markdown.
+HEADER_SEPARATOR = " _ "
+
 # ===============================================================================
 # Monkey patch the TagRunner class to add the OPEN_TABLE_MARKER to the beginning of
 # each table. Each table will start with a 1-cell row with the OPEN_TABLE_MARKER.
@@ -61,6 +65,54 @@ def iter_text_paragraphs(not_a_table):
     return iter_at_depth(not_a_table, 3)
 
 
+def _are_all_unique(seq):
+    """Check if all elements in a sequence are unique."""
+    return len(seq) == len(set(seq))
+
+
+def _join_table_cell(cell):
+    """Join a cell into a single string."""
+    return "<br>".join(cell)
+
+
+def _join_table_row_cells(row):
+    """Join each cell in a row into a single string."""
+    return [_join_table_cell(cell) for cell in row]
+
+
+def _combine_headers(table):
+    """Combine headers into a single string.
+
+    Many tables are built
+
+    | header1  | header2  | header3  |
+    | ---------|----------|----------|
+    | datum1   | datum2   | datum3   |
+
+    Other tables are built
+
+    | CATEGORY | CATEGORY | CATEGORY |
+    | ---------|----------|----------|
+    | header1  | header2  | header3  |
+    | datum1   | datum2   | datum3   |
+
+    Keep combining header rows until each column has a unique header. E.g.,
+    "CATEGORY _ header1", "CATEGORY _ header2", "CATEGORY _ header3"
+
+    Return the combined headers. This function has a side effect of removing the
+    header rows from the input table.
+    """
+    headers = _join_table_row_cells(table.pop(0))
+    while not _are_all_unique(headers):
+        try:
+            next_header_row = _join_table_row_cells(table.pop(0))
+        except IndexError:
+            msg = "Cannot create a unique header for each column."
+            raise ValueError(msg)
+        headers = [HEADER_SEPARATOR.join(h) for h in zip(headers, next_header_row)]
+    return headers
+
+
 def iter_table_paragraphs(table):
     """Iter each row from a table as `header: data`.
 
@@ -71,11 +123,17 @@ def iter_table_paragraphs(table):
     2. a row of headers,
     3. then at least one row of data.
     """
-    if len(table) <= 2:
+    # strip first row, which is the table marker
+    table = table[1:]
+
+    # a table with headers only and no data is most likely just something the docx
+    # author used to format the document. Print the contents as text.
+    if len(table) <= 1:
         return iter_text_paragraphs(table)
-    headers = ["<br>".join(x) for x in table[1]]
-    for row in table[2:]:
-        row_cells = ["<br>".join(x) for x in row]
+
+    headers = _combine_headers(table)
+    for row in table:
+        row_cells = _join_table_row_cells(row)
         yield "\n".join(
             [TABLE_BORDER]
             + [f"{h}: {c}" for h, c in zip(headers, row_cells)]
@@ -85,16 +143,16 @@ def iter_table_paragraphs(table):
 
 def iter_text_and_table_paragraphs(docx_tables):
     """Iter paragraphs from a docx export."""
-    for table in docx_tables:
+    for potential_table in docx_tables:
         try:
-            is_table = table[0][0][0] == OPEN_TABLE_MARKER
+            is_table = potential_table[0][0][0] == OPEN_TABLE_MARKER
         except IndexError:
             is_table = False
 
         if is_table:
-            yield from iter_table_paragraphs(table)
+            yield from iter_table_paragraphs(potential_table)
         else:
-            yield from iter_text_paragraphs(table)
+            yield from iter_text_paragraphs(potential_table)
 
 
 if __name__ == "__main__":
